@@ -65,7 +65,7 @@ def teste_carga(url, num_requests, intervalo=0):
         print("Nenhum request foi realizado.")
         return
 
-    # 1. Error Rate (Considerando Erros de Conexão + HTTP 5xx/4xx se desejar)
+    # 1. Error Rate (Considerando Erros de Conexão + HTTP 5xx/4xx)
     # Aqui vamos considerar erro qualquer coisa que não seja 200-299 ou exceção
     erros_http = sum(1 for code in status_codes if not 200 <= code < 300)
     total_erros = erros_conexao + erros_http
@@ -105,7 +105,5 @@ if __name__ == "__main__":
 
     URL_TESTE = "http://localhost:8080" 
     
-    # Dica: Para testar sem um servidor real, use um site como httpbin.org/get (com moderação)
-    # URL_TESTE = "https://httpbin.org/get"
     
     teste_carga(URL_TESTE, num_requests=500, intervalo=0.05)
