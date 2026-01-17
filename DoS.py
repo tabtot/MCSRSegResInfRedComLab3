@@ -27,7 +27,7 @@ def teste_carga(url, num_requests, intervalo=0):
         
         start_time = time.perf_counter() 
         try:
-            response = requests.get(url, timeout=5)
+            response = requests.get(url, timeout=2)
             duration = (time.perf_counter() - start_time) * 1000 # Converter para ms
             
             with data_lock:
@@ -106,4 +106,4 @@ if __name__ == "__main__":
     URL_TESTE = "http://localhost:8080" 
     
     
-    teste_carga(URL_TESTE, num_requests=500, intervalo=0.05)
+    teste_carga(URL_TESTE, num_requests=10000, intervalo=0)
