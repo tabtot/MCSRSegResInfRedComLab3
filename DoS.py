@@ -3,38 +3,34 @@ import threading
 import time
 import subprocess
 import matplotlib.pyplot as plt
-import json
 from datetime import datetime
+from collections import defaultdict
 
 # --- CONFIGURAÇÕES ---
 URL = "http://localhost:8080"
-NUM_REQUESTS = 50000  
-INTERVALO = 0         # 0 = Ataque contínuo (DoS)
-TIMEOUT = 2           # Segundos até considerar timeout
+NUM_REQUESTS = 100000   # Volume suficiente para o teste
+TIMEOUT = 2            
 
-# --- ARMAZENAMENTO DE DADOS ---
-dados_latencia = []   # (tempo_relativo, latencia_ms)
-dados_erros = []      # (tempo_relativo, 1) - Apenas marca o instante do erro
-dados_replicas = []   # (tempo_relativo, num_replicas)
+# --- ARMAZENAMENTO ---
+timestamps_sucesso = []
+timestamps_erro = []
+dados_latencia = []   
+dados_replicas = []   
 
 start_time = 0
 running = True
 
 def obter_replicas():
-    """Consulta o Kubernetes para saber quantos pods estão prontos."""
     try:
-        # Comando para obter o número de réplicas prontas em JSON
         cmd = "kubectl get deployment demo-api -o jsonpath='{.status.readyReplicas}'"
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-        
         output = result.stdout.strip()
         if not output: return 0
         return int(output.replace("'", ""))
     except:
-        return 1 # Assume 1 se der erro de leitura
+        return 1
 
 def monitor_k8s():
-    """Thread que regista o número de réplicas a cada 0.5 segundos."""
     while running:
         tempo_atual = time.time() - start_time
         qtd = obter_replicas()
@@ -42,8 +38,7 @@ def monitor_k8s():
         time.sleep(0.5)
 
 def enviar_request(thread_id):
-    """Envia um request e regista o resultado."""
-    global dados_latencia, dados_erros
+    global timestamps_sucesso, timestamps_erro, dados_latencia
     
     try:
         inicio = time.time()
@@ -51,96 +46,105 @@ def enviar_request(thread_id):
         fim = time.time()
         
         tempo_relativo = fim - start_time
-        duracao_ms = (fim - inicio) * 1000
+        duracao_ms = (fim - inicio) * 1000  
         
-        # Se o status não for 200 (ex: 503 do Rate Limit), conta como 'Erro' para o gráfico
         if resp.status_code >= 400:
-            dados_erros.append((tempo_relativo, 1))
+            timestamps_erro.append(tempo_relativo)
         else:
+            timestamps_sucesso.append(tempo_relativo)
             dados_latencia.append((tempo_relativo, duracao_ms))
             
     except Exception:
-        # Erro de conexão ou Timeout
         tempo_relativo = time.time() - start_time
-        dados_erros.append((tempo_relativo, 1))
+        timestamps_erro.append(tempo_relativo)
 
 def executar_teste():
     global start_time, running
-    print(f"--- INICIANDO TESTE COMPLETO ({NUM_REQUESTS} requests) ---")
-    print("1. Monitorização de réplicas: ATIVA")
-    print("2. Ataque HTTP: A INICIAR...")
+    print(f"--- A INICIAR TESTE DE CARGA ({NUM_REQUESTS} reqs) ---")
     
     start_time = time.time()
-    
-    # Inicia monitorização do HPA em background
     t_monitor = threading.Thread(target=monitor_k8s)
     t_monitor.start()
     
-    # Inicia o ataque
     threads = []
     for i in range(NUM_REQUESTS):
         t = threading.Thread(target=enviar_request, args=(i,))
         threads.append(t)
         t.start()
-        # Pequena pausa para não bloquear o CPU do script Python
-        # if i % 100 == 0: time.sleep(0.01)
 
-    # Aguarda o fim dos requests
     for t in threads:
         t.join()
     
-    # Dá mais 5 segundos para registar a estabilização das réplicas
-    print("--- Ataque terminado. A aguardar estabilização (5s)... ---")
+    print("--- A aguardar estabilização (5s)... ---")
     time.sleep(5)
-    
     running = False
     t_monitor.join()
-    print("--- DADOS RECOLHIDOS. A GERAR GRÁFICOS... ---")
-    gerar_graficos()
-
-def gerar_graficos():
-    # Configura 3 gráficos empilhados
-    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 12), sharex=True)
     
-    # 1. Latência
+    print("--- A GERAR GRÁFICOS (LATÊNCIA + THROUGHPUT + SCALING)... ---")
+    gerar_graficos_completo()
+
+def gerar_graficos_completo():
+    bucket_sucesso = defaultdict(int)
+    bucket_erro = defaultdict(int)
+    
+    max_tempo = 0
+    
+    for t in timestamps_sucesso:
+        sec = int(t)
+        bucket_sucesso[sec] += 1
+        max_tempo = max(max_tempo, sec)
+        
+    for t in timestamps_erro:
+        sec = int(t)
+        bucket_erro[sec] += 1
+        max_tempo = max(max_tempo, sec)
+        
+    if dados_replicas:
+        max_tempo = max(max_tempo, max(t for t, _ in dados_replicas))
+
+    eixo_x_throughput = range(int(max_tempo) + 1)
+    y_sucesso = [bucket_sucesso[t] for t in eixo_x_throughput]
+    y_erro = [bucket_erro[t] for t in eixo_x_throughput]
+
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 15), sharex=True)
+    
+   
     if dados_latencia:
+        
         tempos, lats = zip(*sorted(dados_latencia))
-        ax1.plot(tempos, lats, color='blue', alpha=0.6, linewidth=0.5, label='Latência (ms)')
+        ax1.plot(tempos, lats, color='blue', alpha=0.5, linewidth=0.5, label='Latência (ms)')
         ax1.set_ylabel('Latência (ms)')
-        ax1.set_title('Impacto do Ataque: Latência')
-        ax1.legend(loc='upper right')
+        ax1.set_title('1. Performance: Latência dos Pedidos')
+        ax1.legend(loc="upper right")
         ax1.grid(True, alpha=0.3)
-
-    # 2. Error Rate (Visualização de densidade)
-    if dados_erros:
-        tempos_e, _ = zip(*sorted(dados_erros))
-        # Criar um histograma de erros por segundo seria ideal, mas scatter serve para visualizar "manchas" de erro
-        ax2.scatter(tempos_e, [1]*len(tempos_e), color='red', s=1, alpha=0.5, label='Erros (503/Timeout)')
-        ax2.set_ylabel('Ocorrência de Erros')
-        ax2.set_title('Distribuição de Erros (Rate Limiting)')
-        ax2.set_yticks([]) # Remove números do eixo Y
-        ax2.legend(loc='upper right')
-        ax2.grid(True, alpha=0.3)
     else:
-        ax2.text(0.9, 0.5, "Sem Erros Registados", ha='center')
+        ax1.text(0.5, 0.5, "Sem dados de latência (apenas erros?)", ha='center', transform=ax1.transAxes)
 
-    # 3. Réplicas (HPA)
+    
+    ax2.plot(eixo_x_throughput, y_sucesso, color='blue', label='Sucessos (Req/s)', linewidth=2)
+    ax2.plot(eixo_x_throughput, y_erro, color='red', label='Erros (Req/s)', linewidth=2, linestyle='--')
+    ax2.set_title('2. Throughput: Sucesso vs Erros')
+    ax2.set_ylabel('Pedidos por Segundo')
+    ax2.legend(loc="upper right")
+    ax2.grid(True, alpha=0.3)
+    
+
     if dados_replicas:
         tempos_r, qtds = zip(*sorted(dados_replicas))
-        ax3.step(tempos_r, qtds, where='post', color='green', linewidth=2, label='Réplicas Ativas')
+        ax3.step(tempos_r, qtds, where='post', color='green', linewidth=3, label='Réplicas Ativas')
         ax3.set_ylabel('Nº Pods')
         ax3.set_xlabel('Tempo (segundos)')
-        ax3.set_title('Autoscaling (HPA)')
-        ax3.set_ylim(bottom=0, top=12) # Margem até 12 já que o max é 10
-        ax3.legend(loc='upper right')
+        ax3.set_title('3. Autoscaling (HPA)')
+        ax3.set_ylim(bottom=0, top=12)
+        ax3.legend(loc="lower right")
         ax3.grid(True, alpha=0.3)
 
     plt.tight_layout()
     timestamp = datetime.now().strftime("%H%M%S")
-    nome_ficheiro = f"relatorio_final_{timestamp}.png"
-    plt.savefig(nome_ficheiro)
-    print(f" Gráfico guardado com sucesso: {nome_ficheiro}")
-    plt.show() # Tenta abrir a janela
+    nome = f"relatorio_completo_{timestamp}.png"
+    plt.savefig(nome)
+    print(f"Gráfico guardado com sucesso: {nome}")
+    plt.show()
 
 if __name__ == "__main__":
     executar_teste()

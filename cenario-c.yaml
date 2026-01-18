@@ -6,20 +6,26 @@ data:
   nginx.conf: |
     events { worker_connections 2048; }
     http {
-      # Rate Limit: 50 pedidos/segundo 
-      limit_req_zone $binary_remote_addr zone=req_limit:10m rate=5r/s;
+      limit_req_zone $binary_remote_addr zone=req_limit:10m rate=1000r/s;
+      
+      # Gzip para gastar CPU (ajuda no scaling)
+      gzip on;
+      gzip_min_length 0;
+      gzip_types text/html;
 
       server {
         listen 80;
         keepalive_timeout 0; 
         
+        # Define a diretoria base para servir ficheiros
+        root /usr/share/nginx/html;
+        index index.html;
+        
         location / {
-          # Burst 0: O que passar de 50/s dá erro imediato 
+          # Burst 0 + Nodelay = Tolerância Zero
           limit_req zone=req_limit nodelay;
           
-          # Resposta simples, mas rápida
-          return 200 "Lab Final: Estabilizado\n";
-          add_header Content-Type text/plain;
+
         }
       }
     }
@@ -48,7 +54,6 @@ spec:
           mountPath: /etc/nginx/nginx.conf
           subPath: nginx.conf
         resources:
-
           requests:
             cpu: "5m"
           limits:
@@ -81,6 +86,5 @@ spec:
     kind: Deployment
     name: demo-api
   minReplicas: 1
-  maxReplicas: 10
-
+  maxReplicas: 15
   targetCPUUtilizationPercentage: 10
